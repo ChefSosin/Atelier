@@ -109,16 +109,20 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getFirestore, collection, getDocs, addDoc, deleteDoc, doc, updateDoc }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-// Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+
+/* ═══════════════════════════════════════════════════════════════
+   CONFIGURARE FIREBASE
+   Înlocuiește obiectul de mai jos cu firebaseConfig din proiectul
+   tău Firebase (același folosit la aplicația de livrări).
+   Console Firebase → Project settings → Your apps → SDK setup
+   ═══════════════════════════════════════════════════════════════ */
 const firebaseConfig = {
-  apiKey: "AIzaSyB7EFgDv4_98KNb5sLsly-jQriDfixlll4",
-  authDomain: "chef-sosin-livrari-4b835.firebaseapp.com",
-  projectId: "chef-sosin-livrari-4b835",
-  storageBucket: "chef-sosin-livrari-4b835.firebasestorage.app",
-  messagingSenderId: "958105992536",
-  appId: "1:958105992536:web:376e0d4d51970d5f19392d",
-  measurementId: "G-VS76KRVKEK"
+  apiKey: "PUNE_AICI_API_KEY",
+  authDomain: "PROIECTUL-TAU.firebaseapp.com",
+  projectId: "PROIECTUL-TAU",
+  storageBucket: "PROIECTUL-TAU.appspot.com",
+  messagingSenderId: "000000000000",
+  appId: "1:000000000000:web:xxxxxxxxxxxxxx"
 };
 /* Numele bazei de date Firestore. Dacă folosești aceeași bază ca la
    aplicația de livrări, las-o "adreseclienti"; pentru baza implicită
