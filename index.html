@@ -63,12 +63,14 @@
     border-bottom:1px solid var(--border); white-space:nowrap; text-transform:uppercase; letter-spacing:.3px;}
   td{padding:7px 9px; border-bottom:1px solid var(--border);}
   .tbl-wrap{overflow-x:auto;}
+  .act{display:flex; gap:4px; align-items:center;}
   .stat-card{background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px 14px;}
   .stat-card .lbl{font-size:11px; color:var(--muted);}
   .stat-card .val{font-size:21px; font-weight:600; margin-top:3px;}
   .stat-card.warn{border-color:var(--danger);} .stat-card.warn .val{color:var(--danger);}
   .grid-cards{display:grid; grid-template-columns:repeat(auto-fill,minmax(155px,1fr)); gap:10px;}
   .xdel{background:none; border:none; color:var(--danger); font-size:17px; line-height:1; padding:0 4px;}
+  .xedit{background:none; border:none; color:var(--accent); font-size:15px; line-height:1; padding:0 4px;}
   .modal-bg{position:fixed; inset:0; background:rgba(0,0,0,.65); z-index:100; display:flex;
     align-items:center; justify-content:center; padding:14px;}
   .modal{background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:20px;
@@ -247,7 +249,10 @@ function rParteneri(){
   ${list.map(p => `<div class="card"><div class="row-item">
     <div class="info"><p>${esc(p.nume)}${p.cui ? " · CUI: " + esc(p.cui) : ""}</p>
     ${p.contact || p.telefon ? `<p>${esc(p.contact||"")}${p.telefon ? " · " + esc(p.telefon) : ""}</p>` : ""}</div>
-    <button class="btn btn-d btn-sm" onclick="delRec('${tab}','${p.id}')">Șterge</button>
+    <div class="act">
+      <button class="btn btn-sm" onclick="editPartener('${tab}','${p.id}')">Editează</button>
+      <button class="btn btn-d btn-sm" onclick="delRec('${tab}','${p.id}')">Șterge</button>
+    </div>
   </div></div>`).join("")}`;
 }
 window.addPartener = async tab => {
@@ -256,13 +261,31 @@ window.addPartener = async tab => {
   await dbAdd(tab, { nume, contact: $("p-contact").value.trim(), telefon: $("p-tel").value.trim(), cui: $("p-cui").value.trim() });
   render();
 };
+window.editPartener = (tab, id) => {
+  const p = D[tab].find(x => x.id === id); if(!p) return;
+  openModal("Editează " + (tab==="furnizori"?"furnizor":"client"), `
+    <div class="grid g2">
+      <div><label class="fld">Denumire *</label><input id="ep-nume" value="${esc(p.nume)}"></div>
+      <div><label class="fld">Contact</label><input id="ep-contact" value="${esc(p.contact||"")}"></div>
+      <div><label class="fld">Telefon</label><input id="ep-tel" value="${esc(p.telefon||"")}"></div>
+      <div><label class="fld">CUI</label><input id="ep-cui" value="${esc(p.cui||"")}"></div>
+    </div>
+    <button class="btn btn-p btn-full" style="margin-top:10px" onclick="saveEditPartener('${tab}','${id}')">Salvează modificările</button>`);
+};
+window.saveEditPartener = async (tab, id) => {
+  const nume = $("ep-nume").value.trim(); if(!nume) return;
+  setStatus("Se salvează…");
+  await dbUpd(tab, id, { nume, contact: $("ep-contact").value.trim(), telefon: $("ep-tel").value.trim(), cui: $("ep-cui").value.trim() });
+  setStatus("✓ Sincronizat cu baza de date","ok");
+  closeModal(); render();
+};
 window.delRec = async (col, id) => {
   if(!confirm("Sigur ștergi această înregistrare?")) return;
   await dbDel(col, id); render();
 };
 
 // ── FACTURI INTRARE ───────────────────────────────────────────────
-let fiLinii = [], fiTab = "mp";
+let fiLinii = [], fiTab = "mp", fiEditId = null;
 function rFactIn(){
   return `
   <button class="btn btn-p" style="margin-bottom:14px" onclick="openFactIn()">+ Factură intrare nouă</button>
@@ -275,16 +298,21 @@ function rFactIn(){
     <p>${esc(f.furnizor_nume||"—")} · ${(f.linii||[]).length} linii</p>
     <p>${tf.toFixed(2)} lei fără TVA · ${tc.toFixed(2)} lei cu TVA</p>
     <div class="chips">${(f.linii||[]).map(l => `<span class="chip">${esc(l.descriere)} · ${l.cantitate} ${esc(l.um||"buc")}</span>`).join("")}</div></div>
-    <button class="btn btn-d btn-sm" onclick="delRec('facturi_intrare','${f.id}')">Șterge</button>
+    <div class="act">
+      <button class="btn btn-sm" onclick="openFactIn('${f.id}')">Editează</button>
+      <button class="btn btn-d btn-sm" onclick="delRec('facturi_intrare','${f.id}')">Șterge</button>
+    </div>
   </div></div>`; }).join("")}`;
 }
-window.openFactIn = () => {
-  fiLinii = []; fiTab = "mp";
-  openModal("Factură intrare nouă", `
+window.openFactIn = (editId=null) => {
+  fiEditId = editId; fiTab = "mp";
+  const f = editId ? D.facturi_intrare.find(x => x.id === editId) : null;
+  fiLinii = f ? (f.linii||[]).map(l => ({...l})) : [];
+  openModal(f ? `Editează factura ${esc(f.nr)}` : "Factură intrare nouă", `
     <div class="grid g3">
-      <div><label class="fld">Nr. factură *</label><input id="fi-nr" placeholder="FAC-2026-001"></div>
-      <div><label class="fld">Data</label><input id="fi-data" type="date" value="${azi()}"></div>
-      <div><label class="fld">Furnizor</label><select id="fi-furn">${furnOpts()}</select></div>
+      <div><label class="fld">Nr. factură *</label><input id="fi-nr" placeholder="FAC-2026-001" value="${esc(f?.nr||"")}"></div>
+      <div><label class="fld">Data</label><input id="fi-data" type="date" value="${f?.data||azi()}"></div>
+      <div><label class="fld">Furnizor</label><select id="fi-furn">${furnOpts(f?.furnizor||"")}</select></div>
     </div>
     <div class="subtabs" style="margin-top:8px">
       <button class="subtab active" id="fi-tab-mp" onclick="setFiTab('mp')">Materie primă</button>
@@ -373,25 +401,35 @@ function drawFiLines(){
   $("fi-footer").innerHTML = `
     <div class="total-bar"><span>Total factură:</span>
       <span><b>${tf.toFixed(2)} lei</b> fără TVA · <b>${tc.toFixed(2)} lei</b> cu TVA</span></div>
-    <button class="btn btn-p btn-full" onclick="saveFactIn()">✓ Salvează factura și actualizează stocurile</button>`;
+    <button class="btn btn-p btn-full" onclick="saveFactIn()">✓ ${fiEditId ? "Salvează modificările" : "Salvează factura"} și actualizează stocurile</button>`;
 }
 window.saveFactIn = async () => {
   const nr = $("fi-nr").value.trim(); if(!nr || fiLinii.length === 0) return;
   const dt = $("fi-data").value, furn = $("fi-furn").value;
   setStatus("Se salvează…");
+  // La editare: ștergem intrările vechi legate de această factură (după numărul facturii)
+  if(fiEditId){
+    const old = D.facturi_intrare.find(f => f.id === fiEditId);
+    const oldNr = old?.nr;
+    for(const r of D.intrari_mp.filter(x => x.factura === oldNr)) await dbDel("intrari_mp", r.id);
+    for(const r of D.intrari_ambalaje.filter(x => x.factura === oldNr)) await dbDel("intrari_ambalaje", r.id);
+  }
+  // Recreăm intrările din liniile curente
   for(const l of fiLinii){
     if(l.cat === "mp") await dbAdd("intrari_mp", { ingredient:l.ingredient, um:l.um, cantitate:l.cantitate,
       pret:l.pret_fara, tva:l.tva, furnizor:furn, factura:nr, data:dt });
     else await dbAdd("intrari_ambalaje", { tip:l.tip, dim:l.dim, produs:l.produs, numar:l.cantitate,
       pret:l.pret_fara, tva:l.tva, furnizor:furn, factura:nr, data:dt });
   }
-  await dbAdd("facturi_intrare", { nr, data:dt, furnizor:furn, furnizor_nume:fNume(furn), linii:fiLinii });
+  // Salvăm / actualizăm documentul de factură
+  if(fiEditId) await dbUpd("facturi_intrare", fiEditId, { nr, data:dt, furnizor:furn, furnizor_nume:fNume(furn), linii:fiLinii });
+  else await dbAdd("facturi_intrare", { nr, data:dt, furnizor:furn, furnizor_nume:fNume(furn), linii:fiLinii });
   setStatus("✓ Sincronizat cu baza de date","ok");
-  closeModal(); render();
+  fiEditId = null; closeModal(); render();
 };
 
 // ── FACTURI IEȘIRE ────────────────────────────────────────────────
-let foLinii = [];
+let foLinii = [], foEditId = null;
 function rFactOut(){
   return `
   <button class="btn btn-p" style="margin-bottom:14px" onclick="openFactOut()">+ Factură ieșire nouă</button>
@@ -404,17 +442,22 @@ function rFactOut(){
     <p>${esc(f.client_nume||"—")} · ${(f.linii||[]).length} produse</p>
     <div class="chips">${(f.linii||[]).map(l => `<span class="chip">${esc(l.produs)} × ${l.cantitate} buc</span>`).join("")}</div>
     <p>${tf.toFixed(2)} lei fără TVA · ${tc.toFixed(2)} lei cu TVA</p></div>
-    <button class="btn btn-d btn-sm" onclick="delFactOut('${f.id}')">Șterge</button>
+    <div class="act">
+      <button class="btn btn-sm" onclick="openFactOut('${f.id}')">Editează</button>
+      <button class="btn btn-d btn-sm" onclick="delFactOut('${f.id}')">Șterge</button>
+    </div>
   </div></div>`; }).join("")}`;
 }
-window.openFactOut = () => {
-  foLinii = [];
+window.openFactOut = (editId=null) => {
+  foEditId = editId;
+  const f = editId ? D.facturi_iesire.find(x => x.id === editId) : null;
+  foLinii = f ? (f.linii||[]).map(l => ({...l})) : [];
   const produse = [...new Set(D.loturi.map(l => l.produs))];
-  openModal("Factură ieșire nouă", `
+  openModal(f ? `Editează factura ${esc(f.nr)}` : "Factură ieșire nouă", `
     <div class="grid g3">
-      <div><label class="fld">Nr. factură *</label><input id="fo-nr" placeholder="FS-2026-001"></div>
-      <div><label class="fld">Data</label><input id="fo-data" type="date" value="${azi()}"></div>
-      <div><label class="fld">Client</label><select id="fo-client">${clientOpts()}</select></div>
+      <div><label class="fld">Nr. factură *</label><input id="fo-nr" placeholder="FS-2026-001" value="${esc(f?.nr||"")}"></div>
+      <div><label class="fld">Data</label><input id="fo-data" type="date" value="${f?.data||azi()}"></div>
+      <div><label class="fld">Client</label><select id="fo-client">${clientOpts(f?.client||"")}</select></div>
     </div>
     <div class="grid g4" style="align-items:end;margin-top:8px">
       <div><label class="fld">Produs *</label>
@@ -425,6 +468,7 @@ window.openFactOut = () => {
     </div>
     <button class="add-line-btn" style="width:100%;margin-top:6px" onclick="addFoLinie()">+ Adaugă produsul</button>
     <div id="fo-lines"></div><div id="fo-footer"></div>`);
+  drawFoLines();
 };
 window.addFoLinie = () => {
   const prod = $("ol-prod").value, c = parseInt($("ol-cant").value), p = parseFloat($("ol-pret").value), tva = parseInt($("ol-tva").value);
@@ -438,6 +482,7 @@ window.addFoLinie = () => {
 };
 window.delFoLinie = i => { foLinii.splice(i,1); drawFoLines(); };
 function drawFoLines(){
+  if(!$("fo-lines")) return;
   if(foLinii.length === 0){ $("fo-lines").innerHTML = ""; $("fo-footer").innerHTML = ""; return; }
   const tf = foLinii.reduce((s,l)=>s+l.cantitate*l.pret_fara,0);
   const tc = foLinii.reduce((s,l)=>s+l.cantitate*l.pret_cu,0);
@@ -451,17 +496,24 @@ function drawFoLines(){
   $("fo-footer").innerHTML = `
     <div class="total-bar"><span>Total factură:</span>
       <span><b>${tf.toFixed(2)} lei</b> fără TVA · <b>${tc.toFixed(2)} lei</b> cu TVA</span></div>
-    <button class="btn btn-p btn-full" onclick="saveFactOut()">✓ Salvează factura și scade din stoc</button>`;
+    <button class="btn btn-p btn-full" onclick="saveFactOut()">✓ ${foEditId ? "Salvează modificările" : "Salvează factura"} și scade din stoc</button>`;
 }
 window.saveFactOut = async () => {
   const nr = $("fo-nr").value.trim(); if(!nr || foLinii.length === 0) return;
   const dt = $("fo-data").value, cl = $("fo-client").value;
   setStatus("Se salvează…");
+  // La editare: ștergem vânzările vechi ale acestei facturi (stocul se reface)
+  if(foEditId){
+    const old = D.facturi_iesire.find(f => f.id === foEditId);
+    const oldNr = old?.nr;
+    for(const v of D.vanzari.filter(v => v.factura === oldNr)) await dbDel("vanzari", v.id);
+  }
   for(const l of foLinii)
     await dbAdd("vanzari", { produs:l.produs, numar:l.cantitate, pret:l.pret_fara, tva:l.tva, factura:nr, data:dt, client:cl });
-  await dbAdd("facturi_iesire", { nr, data:dt, client:cl, client_nume:cNume(cl), linii:foLinii });
+  if(foEditId) await dbUpd("facturi_iesire", foEditId, { nr, data:dt, client:cl, client_nume:cNume(cl), linii:foLinii });
+  else await dbAdd("facturi_iesire", { nr, data:dt, client:cl, client_nume:cNume(cl), linii:foLinii });
   setStatus("✓ Sincronizat cu baza de date","ok");
-  closeModal(); render();
+  foEditId = null; closeModal(); render();
 };
 window.delFactOut = async id => {
   if(!confirm("Ștergi factura? Vânzările aferente vor fi și ele șterse, iar stocul se va reface.")) return;
@@ -496,7 +548,8 @@ function rInventar(){
       ${D.intrari_mp.map(r => `<tr><td><b>${esc(r.ingredient)}</b></td><td>${esc(r.um)}</td><td>${r.cantitate}</td>
         <td>${r.pret} lei</td><td>${r.tva}%</td><td>${esc(fNume(r.furnizor))}</td>
         <td>${esc(r.factura||"—")}</td><td>${esc(r.data||"—")}</td>
-        <td><button class="xdel" onclick="delRec('intrari_mp','${r.id}')">×</button></td></tr>`).join("")}
+        <td><div class="act"><button class="xedit" onclick="editIntrareMP('${r.id}')" title="Editează">✎</button>
+        <button class="xdel" onclick="delRec('intrari_mp','${r.id}')">×</button></div></td></tr>`).join("")}
     </table></div>`;
   } else if(t === "amb"){
     body = `<div class="card"><h3>Adaugă intrare ambalaje</h3>
@@ -522,7 +575,8 @@ function rInventar(){
       ${D.intrari_ambalaje.map(r => `<tr><td><b>${esc(r.tip)}</b></td><td>${esc(r.tip==="etichete"?r.produs:r.dim)}</td>
         <td>${r.numar}</td><td>${r.pret} lei</td><td>${r.tva}%</td><td>${esc(fNume(r.furnizor))}</td>
         <td>${esc(r.factura||"—")}</td><td>${esc(r.data||"—")}</td>
-        <td><button class="xdel" onclick="delRec('intrari_ambalaje','${r.id}')">×</button></td></tr>`).join("")}
+        <td><div class="act"><button class="xedit" onclick="editIntrareAmb('${r.id}')" title="Editează">✎</button>
+        <button class="xdel" onclick="delRec('intrari_ambalaje','${r.id}')">×</button></div></td></tr>`).join("")}
     </table></div>`;
   } else if(t === "stoc_mp"){
     const s = stocMP();
@@ -555,6 +609,30 @@ window.addIntrareMP = async () => {
     tva:parseInt($("imp-tva").value), furnizor:$("imp-furn").value, factura:$("imp-fact").value.trim(), data:$("imp-data").value });
   render();
 };
+window.editIntrareMP = id => {
+  const r = D.intrari_mp.find(x => x.id === id); if(!r) return;
+  openModal("Editează intrare MP", `
+    <div class="grid g3">
+      <div style="grid-column:span 2"><label class="fld">Ingredient *</label><input id="emp-ing" value="${esc(r.ingredient)}"></div>
+      <div><label class="fld">UM</label><select id="emp-um">${umOpts(r.um)}</select></div>
+      <div><label class="fld">Cantitate</label><input id="emp-cant" type="number" step="any" value="${r.cantitate}"></div>
+      <div><label class="fld">Preț/UM fără TVA</label><input id="emp-pret" type="number" step="any" value="${r.pret}"></div>
+      <div><label class="fld">TVA</label><select id="emp-tva">${tvaOpts(r.tva)}</select></div>
+      <div><label class="fld">Furnizor</label><select id="emp-furn">${furnOpts(r.furnizor)}</select></div>
+      <div><label class="fld">Nr. factură</label><input id="emp-fact" value="${esc(r.factura||"")}"></div>
+      <div><label class="fld">Data</label><input id="emp-data" type="date" value="${r.data||azi()}"></div>
+    </div>
+    <button class="btn btn-p btn-full" style="margin-top:10px" onclick="saveEditIntrareMP('${id}')">Salvează modificările</button>`);
+};
+window.saveEditIntrareMP = async id => {
+  const ing = $("emp-ing").value.trim(), c = parseFloat($("emp-cant").value), p = parseFloat($("emp-pret").value);
+  if(!ing || isNaN(c) || isNaN(p)) return;
+  setStatus("Se salvează…");
+  await dbUpd("intrari_mp", id, { ingredient:ing, um:$("emp-um").value, cantitate:c, pret:p,
+    tva:parseInt($("emp-tva").value), furnizor:$("emp-furn").value, factura:$("emp-fact").value.trim(), data:$("emp-data").value });
+  setStatus("✓ Sincronizat cu baza de date","ok");
+  closeModal(); render();
+};
 window.addIntrareAmb = async () => {
   const tip = $("iam-tip").value, n = parseInt($("iam-nr").value), p = parseFloat($("iam-pret").value);
   if(!n || !p) return;
@@ -564,6 +642,42 @@ window.addIntrareAmb = async () => {
     numar:n, pret:p, tva:parseInt($("iam-tva").value), furnizor:$("iam-furn").value,
     factura:$("iam-fact").value.trim(), data:$("iam-data").value });
   render();
+};
+window.editIntrareAmb = id => {
+  const r = D.intrari_ambalaje.find(x => x.id === id); if(!r) return;
+  const isEt = r.tip === "etichete";
+  openModal("Editează intrare ambalaje", `
+    <div class="grid g3">
+      <div><label class="fld">Tip</label><select id="eam-tip" onchange="toggleEamTip()">${optHtml(["borcane","capace","etichete"], r.tip)}</select></div>
+      <div><label class="fld">Dimensiune / Produs</label>
+        <select id="eam-dim" style="${isEt?'display:none':''}">${dimOpts(r.dim)}</select>
+        <input id="eam-prod" placeholder="Produs" value="${esc(r.produs||"")}" style="${isEt?'':'display:none'}">
+      </div>
+      <div><label class="fld">Nr. bucăți</label><input id="eam-nr" type="number" value="${r.numar}"></div>
+      <div><label class="fld">Preț/buc fără TVA</label><input id="eam-pret" type="number" step="any" value="${r.pret}"></div>
+      <div><label class="fld">TVA</label><select id="eam-tva">${tvaOpts(r.tva)}</select></div>
+      <div><label class="fld">Furnizor</label><select id="eam-furn">${furnOpts(r.furnizor)}</select></div>
+      <div><label class="fld">Nr. factură</label><input id="eam-fact" value="${esc(r.factura||"")}"></div>
+      <div><label class="fld">Data</label><input id="eam-data" type="date" value="${r.data||azi()}"></div>
+    </div>
+    <button class="btn btn-p btn-full" style="margin-top:10px" onclick="saveEditIntrareAmb('${id}')">Salvează modificările</button>`);
+};
+window.toggleEamTip = () => {
+  const et = $("eam-tip").value === "etichete";
+  $("eam-dim").style.display = et ? "none" : "";
+  $("eam-prod").style.display = et ? "" : "none";
+};
+window.saveEditIntrareAmb = async id => {
+  const tip = $("eam-tip").value, n = parseInt($("eam-nr").value), p = parseFloat($("eam-pret").value);
+  if(isNaN(n) || isNaN(p)) return;
+  const dim = $("eam-dim").value, prod = $("eam-prod").value.trim();
+  if(tip !== "etichete" && !dim) return;
+  setStatus("Se salvează…");
+  await dbUpd("intrari_ambalaje", id, { tip, dim: tip!=="etichete"?dim:"", produs: tip==="etichete"?prod:"",
+    numar:n, pret:p, tva:parseInt($("eam-tva").value), furnizor:$("eam-furn").value,
+    factura:$("eam-fact").value.trim(), data:$("eam-data").value });
+  setStatus("✓ Sincronizat cu baza de date","ok");
+  closeModal(); render();
 };
 
 // ── REȚETE ────────────────────────────────────────────────────────
