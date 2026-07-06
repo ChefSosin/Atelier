@@ -164,18 +164,26 @@ function pretMediu(ig){
   const tc = intr.reduce((s,r)=>s+r.cantitate,0), tv = intr.reduce((s,r)=>s+r.cantitate*r.pret,0);
   return tc > 0 ? tv/tc : 0;
 }
+// Volumele unui lot: suportă noul format (borcane: [{dim,nr}]) și pe cel vechi (dim_borcan/nr_borcane)
+function lotBorcane(l){
+  if(Array.isArray(l.borcane) && l.borcane.length) return l.borcane;
+  if(l.dim_borcan) return [{ dim:l.dim_borcan, nr:l.nr_borcane||0 }];
+  return [];
+}
+function lotTotal(l){ return lotBorcane(l).reduce((s,b)=>s+(b.nr||0),0); }
+
 function stocAmbalaje(){
   const s = { borcane:{}, capace:{}, etichete:{} };
   D.intrari_ambalaje.forEach(r => { const k = r.tip === "etichete" ? r.produs : r.dim; s[r.tip][k] = (s[r.tip][k]||0) + r.numar; });
-  D.loturi.forEach(l => {
-    if(s.borcane[l.dim_borcan] !== undefined) s.borcane[l.dim_borcan] = Math.max(0, s.borcane[l.dim_borcan] - l.nr_borcane);
-    if(s.capace[l.dim_borcan] !== undefined) s.capace[l.dim_borcan] = Math.max(0, s.capace[l.dim_borcan] - l.nr_borcane);
-  });
+  D.loturi.forEach(l => lotBorcane(l).forEach(b => {
+    if(s.borcane[b.dim] !== undefined) s.borcane[b.dim] = Math.max(0, s.borcane[b.dim] - b.nr);
+    if(s.capace[b.dim] !== undefined) s.capace[b.dim] = Math.max(0, s.capace[b.dim] - b.nr);
+  }));
   return s;
 }
 function stocProduse(){
   const s = {};
-  D.loturi.forEach(l => { if(!s[l.produs]) s[l.produs] = { produs:0, vandut:0 }; s[l.produs].produs += l.nr_borcane; });
+  D.loturi.forEach(l => { if(!s[l.produs]) s[l.produs] = { produs:0, vandut:0 }; s[l.produs].produs += lotTotal(l); });
   D.vanzari.forEach(v => { if(!s[v.produs]) s[v.produs] = { produs:0, vandut:0 }; s[v.produs].vandut += v.numar; });
   return s;
 }
@@ -211,7 +219,7 @@ window.setTab = t => { activeTab = t; render(); };
 window.setSub = (grp, v) => { SUB[grp] = v; render(); };
 
 function renderStats(){
-  const pf = D.loturi.reduce((s,l)=>s+l.nr_borcane,0) - D.vanzari.reduce((s,v)=>s+v.numar,0);
+  const pf = D.loturi.reduce((s,l)=>s+lotTotal(l),0) - D.vanzari.reduce((s,v)=>s+v.numar,0);
   $("stats").innerHTML = [
     ["MP în stoc", Object.keys(stocMP()).length], ["Produse finite", pf], ["Loturi", D.loturi.length],
     ["Facturi IN", D.facturi_intrare.length], ["Facturi OUT", D.facturi_iesire.length]
@@ -604,7 +612,7 @@ window.toggleAmbTip = () => {
 };
 window.addIntrareMP = async () => {
   const ing = $("imp-ing").value.trim(), c = parseFloat($("imp-cant").value), p = parseFloat($("imp-pret").value);
-  if(!ing || !c || !p) return;
+  if(!ing || isNaN(c) || isNaN(p)) return;
   await dbAdd("intrari_mp", { ingredient:ing, um:$("imp-um").value, cantitate:c, pret:p,
     tva:parseInt($("imp-tva").value), furnizor:$("imp-furn").value, factura:$("imp-fact").value.trim(), data:$("imp-data").value });
   render();
@@ -744,7 +752,7 @@ window.saveReteta = async () => {
 };
 
 // ── PRODUCȚIE + LOTURI (logică comună) ────────────────────────────
-let prEditLot = null, prPreview = null;
+let prEditLot = null, prPreview = null, prBorcane = [];
 function rProductie(){
   return `
   <button class="btn btn-p" style="margin-bottom:14px" onclick="openProductie()">⚗ Producție nouă</button>
@@ -754,7 +762,7 @@ function rProductie(){
 function lotCardHtml(l){
   return `<div class="card"><div class="row-item">
     <div class="info"><p>${esc(l.produs)}</p>
-    <p>${esc(l.numar)} · ${l.nr_borcane} borcane × ${esc(l.dim_borcan)} · mult. ${l.multiplicator}× · ${esc(l.data)}</p>
+    <p>${esc(l.numar)} · ${lotBorcane(l).map(b=>`${b.nr}×${esc(b.dim)}`).join(", ")} · mult. ${l.multiplicator}× · ${esc(l.data)}</p>
     <div class="chips">${(l.consum_mp||[]).map(c => `<span class="chip">${esc(c.ingredient)} ${c.cantitate.toFixed(1)}${esc(c.um)}</span>`).join("")}</div></div>
     <button class="btn btn-sm" onclick="openProductie('${l.id}')">Modifică</button>
   </div></div>`;
@@ -763,24 +771,45 @@ window.openProductie = (lotId=null) => {
   prEditLot = lotId ? D.loturi.find(l => l.id === lotId) : null;
   prPreview = null;
   const l = prEditLot;
+  prBorcane = l ? lotBorcane(l).map(b => ({ ...b })) : [];
   openModal(l ? `Modifică lot: ${l.numar}` : "Producție nouă", `
     <div class="grid g2">
       <div><label class="fld">Rețetă</label><select id="pr-reteta" onchange="prPreview=null;drawPreview()">
         ${optHtml([{value:"",label:"— Rețetă —"}, ...D.retete.map(r=>({value:r.id,label:r.produs}))], l?.reteta_id||"")}</select></div>
       <div><label class="fld">Multiplicator</label><input id="pr-mult" type="number" step="any" value="${l?.multiplicator||1}" oninput="prPreview=null;drawPreview()"></div>
     </div>
-    <div class="grid g2">
-      <div><label class="fld">Dimensiune borcan</label><select id="pr-dim">${optHtml(DIM, l?.dim_borcan||"156ml")}</select></div>
-      <div><label class="fld">Nr. borcane umplute *</label><input id="pr-nrb" type="number" value="${l?.nr_borcane||""}" oninput="drawPreview()"></div>
+    <label class="fld" style="margin-bottom:4px">Volume de borcane produse *</label>
+    <div class="grid g3" style="align-items:end">
+      <div><label class="fld">Dimensiune</label><select id="pr-dim">${optHtml(DIM, "156ml")}</select></div>
+      <div><label class="fld">Nr. borcane</label><input id="pr-nrb" type="number"></div>
+      <div><button class="add-line-btn" style="width:100%" onclick="addPrBorcane()">+ Adaugă volum</button></div>
     </div>
-    <div class="grid g2">
+    <div id="pr-borcane-list"></div>
+    <div class="grid g2" style="margin-top:8px">
       <div><label class="fld">Nr. lot</label><input id="pr-lot" value="${esc(l?.numar || "LOT-"+Date.now().toString().slice(-6))}"></div>
       <div><label class="fld">Data producției</label><input id="pr-data" type="date" value="${l?.data||azi()}"></div>
     </div>
     <button class="btn" style="margin:10px 0" onclick="calcConsum()">Calculează consum MP</button>
     <div id="pr-preview"></div>
     <div id="pr-actions"></div>`);
+  drawPrBorcane();
 };
+window.addPrBorcane = () => {
+  const dim = $("pr-dim").value, nr = parseInt($("pr-nrb").value);
+  if(!dim || !nr) return;
+  const ex = prBorcane.find(b => b.dim === dim);
+  if(ex) ex.nr += nr; else prBorcane.push({ dim, nr });
+  $("pr-nrb").value = "";
+  drawPrBorcane(); drawPreview();
+};
+window.delPrBorcane = i => { prBorcane.splice(i,1); drawPrBorcane(); drawPreview(); };
+function drawPrBorcane(){
+  if(!$("pr-borcane-list")) return;
+  $("pr-borcane-list").innerHTML = prBorcane.length === 0
+    ? `<p class="muted" style="margin:6px 0">Niciun volum adăugat încă.</p>`
+    : prBorcane.map((b,i) => `<div class="consum-row"><span><b>${b.nr}</b> borcane × ${esc(b.dim)}</span>
+      <button class="xdel" onclick="delPrBorcane(${i})">×</button></div>`).join("");
+}
 window.calcConsum = () => {
   const rid = $("pr-reteta").value, mult = parseFloat($("pr-mult").value);
   const reteta = D.retete.find(r => r.id === rid);
@@ -799,15 +828,14 @@ window.drawPreview = () => {
   $("pr-preview").innerHTML = prPreview.consum.map(c =>
     `<div class="consum-row${c.ok?"":" insuf"}"><span>${esc(c.ingredient)}</span>
     <span>${c.necesar.toFixed(1)} ${esc(c.um)}${c.ok ? "" : " ⚠ stoc: " + c.disp.toFixed(1)}</span></div>`).join("");
-  const nrb = $("pr-nrb").value;
-  $("pr-actions").innerHTML = (prPreview && nrb)
+  $("pr-actions").innerHTML = (prPreview && prBorcane.length)
     ? `<button class="btn btn-p btn-full" style="margin-top:8px" onclick="execProductie()">${prEditLot ? "Salvează modificările →" : "Confirmă producția →"}</button>`
-    : `<p class="warn-txt">Completează numărul de borcane umplute.</p>`;
+    : `<p class="warn-txt">Adaugă cel puțin un volum de borcane.</p>`;
 };
 window.execProductie = async () => {
   if(!prPreview) return;
   if(prPreview.consum.some(c => !c.ok)){ alert("Stoc insuficient pentru unele ingrediente!"); return; }
-  const nrb = parseInt($("pr-nrb").value); if(!nrb) return;
+  if(prBorcane.length === 0){ alert("Adaugă cel puțin un volum de borcane."); return; }
   setStatus("Se salvează…");
   // restaurăm consumul lotului vechi (la editare)
   if(prEditLot){
@@ -827,12 +855,12 @@ window.execProductie = async () => {
     }
   }
   const lotData = { numar:$("pr-lot").value.trim(), produs:prPreview.reteta.produs, reteta_id:prPreview.reteta.id,
-    multiplicator:prPreview.mult, dim_borcan:$("pr-dim").value, nr_borcane:nrb, data:$("pr-data").value,
+    multiplicator:prPreview.mult, borcane: prBorcane.map(b => ({ dim:b.dim, nr:b.nr })), data:$("pr-data").value,
     consum_mp: prPreview.consum.map(c => ({ ingredient:c.ingredient, cantitate:c.necesar, um:c.um })) };
   if(prEditLot) await dbUpd("loturi", prEditLot.id, lotData);
   else await dbAdd("loturi", lotData);
   setStatus("✓ Sincronizat cu baza de date","ok");
-  prEditLot = null; prPreview = null;
+  prEditLot = null; prPreview = null; prBorcane = [];
   closeModal(); render();
 };
 
@@ -844,9 +872,9 @@ function rLoturi(){
   const cur = SUB.loturi;
   const loturiP = D.loturi.filter(l => l.produs === cur);
   const vandut = D.vanzari.filter(v => v.produs === cur).reduce((s,v)=>s+v.numar,0);
-  const total = loturiP.reduce((s,l)=>s+l.nr_borcane,0);
+  const total = loturiP.reduce((s,l)=>s+lotTotal(l),0);
   const dimC = {};
-  loturiP.forEach(l => dimC[l.dim_borcan] = (dimC[l.dim_borcan]||0) + l.nr_borcane);
+  loturiP.forEach(l => lotBorcane(l).forEach(b => dimC[b.dim] = (dimC[b.dim]||0) + b.nr));
   return `
   <div class="subtabs">${produse.map(p =>
     `<button class="subtab${p===cur?" active":""}" onclick="setSub('loturi','${esc(p)}')">${esc(p)}</button>`).join("")}</div>
