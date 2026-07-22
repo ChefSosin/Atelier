@@ -95,10 +95,20 @@
 </style>
 </head>
 <body>
+<div id="login-ov" style="position:fixed;inset:0;background:var(--bg);z-index:200;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;padding:20px;text-align:center">
+  <h2 style="font-size:20px">Chef <span style="color:var(--accent)">SOSIN</span> · Atelier</h2>
+  <p class="muted" id="login-msg">Autentifică-te pentru a accesa aplicația.</p>
+  <button class="btn btn-p" onclick="loginGoogle()">Conectare cu Google</button>
+</div>
 <div class="container">
   <header>
-    <h1>Chef <span>SOSIN</span></h1>
-    <p>Aplicație Atelier · v2.0 · sincronizat în cloud</p>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+      <div>
+        <h1>Chef <span>SOSIN</span></h1>
+        <p>Aplicație Atelier · v3.0 · sincronizat în cloud</p>
+      </div>
+      <button id="btn-logout" class="btn btn-sm" style="display:none" onclick="logoutUser()">Ieșire</button>
+    </div>
     <div class="stats" id="stats"></div>
   </header>
   <div class="tabs" id="tabs"></div>
@@ -109,8 +119,10 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getFirestore, collection, getDocs, addDoc, deleteDoc, doc, updateDoc }
+import { getFirestore, collection, getDocs, addDoc, deleteDoc, doc, updateDoc, writeBatch }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut }
+  from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 // Your web app's Firebase configuration
 // For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
@@ -130,6 +142,12 @@ const FIRESTORE_DB_NAME = "adreseclienti";
 
 const app = initializeApp(firebaseConfig);
 const db = FIRESTORE_DB_NAME === "(default)" ? getFirestore(app) : getFirestore(app, FIRESTORE_DB_NAME);
+const auth = getAuth(app);
+const provider = new GoogleAuthProvider();
+/* Adresele de e-mail care au acces la aplicație.
+   Lista goală [] = orice cont Google autentificat are acces.
+   Exemplu: const UTILIZATORI_PERMISI = ["adresa.ta@gmail.com"]; */
+const UTILIZATORI_PERMISI = [];
 
 const COLS = ["furnizori","clienti","intrari_mp","intrari_ambalaje","retete","loturi","vanzari","facturi_intrare","facturi_iesire"];
 const CP = "atelier_"; // prefix colecții
@@ -179,10 +197,14 @@ function lotTotal(l){ return lotBorcane(l).reduce((s,b)=>s+(b.nr||0),0); }
 function stocAmbalaje(){
   const s = { borcane:{}, capace:{}, etichete:{} };
   D.intrari_ambalaje.forEach(r => { const k = r.tip === "etichete" ? r.produs : r.dim; s[r.tip][k] = (s[r.tip][k]||0) + r.numar; });
-  D.loturi.forEach(l => lotBorcane(l).forEach(b => {
-    if(s.borcane[b.dim] !== undefined) s.borcane[b.dim] = Math.max(0, s.borcane[b.dim] - b.nr);
-    if(s.capace[b.dim] !== undefined) s.capace[b.dim] = Math.max(0, s.capace[b.dim] - b.nr);
-  }));
+  D.loturi.forEach(l => {
+    lotBorcane(l).forEach(b => {
+      if(s.borcane[b.dim] !== undefined) s.borcane[b.dim] = Math.max(0, s.borcane[b.dim] - b.nr);
+      if(s.capace[b.dim] !== undefined) s.capace[b.dim] = Math.max(0, s.capace[b.dim] - b.nr);
+    });
+    if(l.nr_etichete && s.etichete[l.produs] !== undefined)
+      s.etichete[l.produs] = Math.max(0, s.etichete[l.produs] - l.nr_etichete);
+  });
   return s;
 }
 function stocProduse(){
@@ -419,24 +441,30 @@ window.saveFactIn = async () => {
   const nr = $("fi-nr").value.trim(); if(!nr || fiLinii.length === 0) return;
   const dt = $("fi-data").value, furn = $("fi-furn").value;
   setStatus("Se salvează…");
-  // La editare: ștergem intrările vechi legate de această factură (după numărul facturii)
-  if(fiEditId){
-    const old = D.facturi_intrare.find(f => f.id === fiEditId);
-    const oldNr = old?.nr;
-    for(const r of D.intrari_mp.filter(x => x.factura === oldNr)) await dbDel("intrari_mp", r.id);
-    for(const r of D.intrari_ambalaje.filter(x => x.factura === oldNr)) await dbDel("intrari_ambalaje", r.id);
-  }
-  // Recreăm intrările din liniile curente
-  for(const l of fiLinii){
-    if(l.cat === "mp") await dbAdd("intrari_mp", { ingredient:l.ingredient, um:l.um, cantitate:l.cantitate,
-      pret:l.pret_fara, tva:l.tva, furnizor:furn, factura:nr, data:dt });
-    else await dbAdd("intrari_ambalaje", { tip:l.tip, dim:l.dim, produs:l.produs, numar:l.cantitate,
-      pret:l.pret_fara, tva:l.tva, furnizor:furn, factura:nr, data:dt });
-  }
-  // Salvăm / actualizăm documentul de factură
-  if(fiEditId) await dbUpd("facturi_intrare", fiEditId, { nr, data:dt, furnizor:furn, furnizor_nume:fNume(furn), linii:fiLinii });
-  else await dbAdd("facturi_intrare", { nr, data:dt, furnizor:furn, furnizor_nume:fNume(furn), linii:fiLinii });
-  setStatus("✓ Sincronizat cu baza de date","ok");
+  try {
+    const batch = writeBatch(db);
+    // La editare: ștergem intrările vechi legate de această factură (după numărul facturii)
+    if(fiEditId){
+      const old = D.facturi_intrare.find(f => f.id === fiEditId);
+      const oldNr = old?.nr;
+      D.intrari_mp.filter(x => x.factura === oldNr).forEach(r => batch.delete(doc(db, CP+"intrari_mp", r.id)));
+      D.intrari_ambalaje.filter(x => x.factura === oldNr).forEach(r => batch.delete(doc(db, CP+"intrari_ambalaje", r.id)));
+    }
+    // Recreăm intrările din liniile curente
+    for(const l of fiLinii){
+      if(l.cat === "mp") batch.set(doc(collection(db, CP+"intrari_mp")), { ingredient:l.ingredient, categorie:catOf(l.ingredient), um:l.um, cantitate:l.cantitate,
+        pret:l.pret_fara, tva:l.tva, furnizor:furn, factura:nr, data:dt });
+      else batch.set(doc(collection(db, CP+"intrari_ambalaje")), { tip:l.tip, dim:l.dim, produs:l.produs, numar:l.cantitate,
+        pret:l.pret_fara, tva:l.tva, furnizor:furn, factura:nr, data:dt });
+    }
+    // Salvăm / actualizăm documentul de factură
+    const fdata = { nr, data:dt, furnizor:furn, furnizor_nume:fNume(furn), linii:fiLinii };
+    if(fiEditId) batch.update(doc(db, CP+"facturi_intrare", fiEditId), fdata);
+    else batch.set(doc(collection(db, CP+"facturi_intrare")), fdata);
+    await batch.commit();
+    await Promise.all([loadCol("intrari_mp"), loadCol("intrari_ambalaje"), loadCol("facturi_intrare")]);
+    setStatus("✓ Sincronizat cu baza de date","ok");
+  } catch(e){ setStatus("⚠ Eroare la salvare: " + e.message, "err"); }
   fiEditId = null; closeModal(); render();
 };
 
@@ -514,24 +542,38 @@ window.saveFactOut = async () => {
   const nr = $("fo-nr").value.trim(); if(!nr || foLinii.length === 0) return;
   const dt = $("fo-data").value, cl = $("fo-client").value;
   setStatus("Se salvează…");
-  // La editare: ștergem vânzările vechi ale acestei facturi (stocul se reface)
-  if(foEditId){
-    const old = D.facturi_iesire.find(f => f.id === foEditId);
-    const oldNr = old?.nr;
-    for(const v of D.vanzari.filter(v => v.factura === oldNr)) await dbDel("vanzari", v.id);
-  }
-  for(const l of foLinii)
-    await dbAdd("vanzari", { produs:l.produs, numar:l.cantitate, pret:l.pret_fara, tva:l.tva, factura:nr, data:dt, client:cl });
-  if(foEditId) await dbUpd("facturi_iesire", foEditId, { nr, data:dt, client:cl, client_nume:cNume(cl), linii:foLinii });
-  else await dbAdd("facturi_iesire", { nr, data:dt, client:cl, client_nume:cNume(cl), linii:foLinii });
-  setStatus("✓ Sincronizat cu baza de date","ok");
+  try {
+    const batch = writeBatch(db);
+    // La editare: ștergem vânzările vechi ale acestei facturi (stocul se reface)
+    if(foEditId){
+      const old = D.facturi_iesire.find(f => f.id === foEditId);
+      const oldNr = old?.nr;
+      D.vanzari.filter(v => v.factura === oldNr).forEach(v => batch.delete(doc(db, CP+"vanzari", v.id)));
+    }
+    for(const l of foLinii)
+      batch.set(doc(collection(db, CP+"vanzari")), { produs:l.produs, numar:l.cantitate, pret:l.pret_fara, tva:l.tva, factura:nr, data:dt, client:cl });
+    const fdata = { nr, data:dt, client:cl, client_nume:cNume(cl), linii:foLinii };
+    if(foEditId) batch.update(doc(db, CP+"facturi_iesire", foEditId), fdata);
+    else batch.set(doc(collection(db, CP+"facturi_iesire")), fdata);
+    await batch.commit();
+    await Promise.all([loadCol("vanzari"), loadCol("facturi_iesire")]);
+    setStatus("✓ Sincronizat cu baza de date","ok");
+  } catch(e){ setStatus("⚠ Eroare la salvare: " + e.message, "err"); }
   foEditId = null; closeModal(); render();
 };
 window.delFactOut = async id => {
   if(!confirm("Ștergi factura? Vânzările aferente vor fi și ele șterse, iar stocul se va reface.")) return;
-  const f = D.facturi_iesire.find(x => x.id === id);
-  if(f) for(const v of D.vanzari.filter(v => v.factura === f.nr)) await dbDel("vanzari", v.id);
-  await dbDel("facturi_iesire", id); render();
+  const f = D.facturi_iesire.find(x => x.id === id); if(!f) return;
+  setStatus("Se salvează…");
+  try {
+    const batch = writeBatch(db);
+    D.vanzari.filter(v => v.factura === f.nr).forEach(v => batch.delete(doc(db, CP+"vanzari", v.id)));
+    batch.delete(doc(db, CP+"facturi_iesire", id));
+    await batch.commit();
+    await Promise.all([loadCol("vanzari"), loadCol("facturi_iesire")]);
+    setStatus("✓ Sincronizat cu baza de date","ok");
+  } catch(e){ setStatus("⚠ Eroare la ștergere: " + e.message, "err"); }
+  render();
 };
 
 // ── INVENTAR ──────────────────────────────────────────────────────
@@ -540,9 +582,11 @@ function rInventar(){
   const subs = [["mp","Intrări MP"],["amb","Intrări ambalaje"],["stoc_mp","Stoc MP"],["stoc_amb","Stoc ambalaje"]];
   let body = "";
   if(t === "mp"){
+    const mpRows = [...D.intrari_mp].sort((a,b)=>cmpRO(a.categorie||"Altele",b.categorie||"Altele")||cmpRO(a.ingredient,b.ingredient));
     body = `<div class="card"><h3>Adaugă intrare materie primă</h3>
       <div class="grid g5" style="align-items:end">
-        <div style="grid-column:span 2"><label class="fld">Ingredient *</label><input id="imp-ing"></div>
+        <div><label class="fld">Categorie</label><select id="imp-cat">${catOpts("Altele")}</select></div>
+        <div><label class="fld">Ingredient *</label><input id="imp-ing"></div>
         <div><label class="fld">UM</label><select id="imp-um">${umOpts("g")}</select></div>
         <div><label class="fld">Cantitate</label><input id="imp-cant" type="number" step="any"></div>
         <div><label class="fld">Preț/UM fără TVA</label><input id="imp-pret" type="number" step="any"></div>
@@ -556,8 +600,8 @@ function rInventar(){
       <button class="btn btn-p" onclick="addIntrareMP()">+ Adaugă intrare MP</button>
     </div>
     <div class="tbl-wrap"><table>
-      <tr><th>Ingredient</th><th>UM</th><th>Cant.</th><th>Preț/UM</th><th>TVA</th><th>Furnizor</th><th>Factură</th><th>Data</th><th></th></tr>
-      ${D.intrari_mp.map(r => `<tr><td><b>${esc(r.ingredient)}</b></td><td>${esc(r.um)}</td><td>${r.cantitate}</td>
+      <tr><th>Categorie</th><th>Ingredient</th><th>UM</th><th>Cant.</th><th>Preț/UM</th><th>TVA</th><th>Furnizor</th><th>Factură</th><th>Data</th><th></th></tr>
+      ${mpRows.map(r => `<tr><td>${esc(r.categorie||"Altele")}</td><td><b>${esc(r.ingredient)}</b></td><td>${esc(r.um)}</td><td>${r.cantitate}</td>
         <td>${r.pret} lei</td><td>${r.tva}%</td><td>${esc(fNume(r.furnizor))}</td>
         <td>${esc(r.factura||"—")}</td><td>${esc(r.data||"—")}</td>
         <td><div class="act"><button class="xedit" onclick="editIntrareMP('${r.id}')" title="Editează">✎</button>
@@ -592,11 +636,16 @@ function rInventar(){
     </table></div>`;
   } else if(t === "stoc_mp"){
     const s = stocMP();
-    body = Object.keys(s).length === 0 ? `<p class="empty">Nicio materie primă în stoc.</p>` :
-      `<div class="grid-cards">${Object.entries(s).map(([ig,c]) =>
-        `<div class="stat-card${c<=0?" warn":""}"><div class="lbl">${esc(ig)}</div>
-        <div class="val">${c.toFixed(1)}</div>
-        <div class="lbl">preț mediu: ${pretMediu(ig).toFixed(2)} lei/um</div></div>`).join("")}</div>`;
+    const ents = Object.entries(s).sort((a,b)=>cmpRO(catOf(a[0]),catOf(b[0]))||cmpRO(a[0],b[0]));
+    const grupe = {};
+    ents.forEach(([ig,c]) => { const k = catOf(ig); (grupe[k] = grupe[k] || []).push([ig,c]); });
+    body = ents.length === 0 ? `<p class="empty">Nicio materie primă în stoc.</p>` :
+      Object.entries(grupe).map(([cat,items]) => `
+        <h3 style="font-size:13px;margin:12px 0 8px;color:var(--accent2)">${esc(cat)}</h3>
+        <div class="grid-cards">${items.map(([ig,c]) =>
+          `<div class="stat-card${c<=0?" warn":""}"><div class="lbl">${esc(ig)}</div>
+          <div class="val">${c.toFixed(1)}</div>
+          <div class="lbl">preț mediu: ${pretMediu(ig).toFixed(2)} lei/um</div></div>`).join("")}</div>`).join("");
   } else {
     const s = stocAmbalaje();
     body = ["borcane","capace","etichete"].map(tip => `
@@ -617,7 +666,7 @@ window.toggleAmbTip = () => {
 window.addIntrareMP = async () => {
   const ing = $("imp-ing").value.trim(), c = parseFloat($("imp-cant").value), p = parseFloat($("imp-pret").value);
   if(!ing || isNaN(c) || isNaN(p)) return;
-  await dbAdd("intrari_mp", { ingredient:ing, um:$("imp-um").value, cantitate:c, pret:p,
+  await dbAdd("intrari_mp", { ingredient:ing, categorie:$("imp-cat").value, um:$("imp-um").value, cantitate:c, pret:p,
     tva:parseInt($("imp-tva").value), furnizor:$("imp-furn").value, factura:$("imp-fact").value.trim(), data:$("imp-data").value });
   render();
 };
@@ -625,7 +674,8 @@ window.editIntrareMP = id => {
   const r = D.intrari_mp.find(x => x.id === id); if(!r) return;
   openModal("Editează intrare MP", `
     <div class="grid g3">
-      <div style="grid-column:span 2"><label class="fld">Ingredient *</label><input id="emp-ing" value="${esc(r.ingredient)}"></div>
+      <div><label class="fld">Categorie</label><select id="emp-cat">${catOpts(r.categorie||"Altele")}</select></div>
+      <div><label class="fld">Ingredient *</label><input id="emp-ing" value="${esc(r.ingredient)}"></div>
       <div><label class="fld">UM</label><select id="emp-um">${umOpts(r.um)}</select></div>
       <div><label class="fld">Cantitate</label><input id="emp-cant" type="number" step="any" value="${r.cantitate}"></div>
       <div><label class="fld">Preț/UM fără TVA</label><input id="emp-pret" type="number" step="any" value="${r.pret}"></div>
@@ -640,7 +690,7 @@ window.saveEditIntrareMP = async id => {
   const ing = $("emp-ing").value.trim(), c = parseFloat($("emp-cant").value), p = parseFloat($("emp-pret").value);
   if(!ing || isNaN(c) || isNaN(p)) return;
   setStatus("Se salvează…");
-  await dbUpd("intrari_mp", id, { ingredient:ing, um:$("emp-um").value, cantitate:c, pret:p,
+  await dbUpd("intrari_mp", id, { ingredient:ing, categorie:$("emp-cat").value, um:$("emp-um").value, cantitate:c, pret:p,
     tva:parseInt($("emp-tva").value), furnizor:$("emp-furn").value, factura:$("emp-fact").value.trim(), data:$("emp-data").value });
   setStatus("✓ Sincronizat cu baza de date","ok");
   closeModal(); render();
@@ -766,7 +816,7 @@ function rProductie(){
 function lotCardHtml(l){
   return `<div class="card"><div class="row-item">
     <div class="info"><p>${esc(l.produs)}</p>
-    <p>${esc(l.numar)} · ${lotBorcane(l).map(b=>`${b.nr}×${esc(b.dim)}`).join(", ")} · mult. ${l.multiplicator}× · ${esc(l.data)}</p>
+    <p>${esc(l.numar)} · ${lotBorcane(l).map(b=>`${b.nr}×${esc(b.dim)}`).join(", ")}${l.nr_etichete != null ? ` · ${l.nr_etichete} etichete` : ""} · mult. ${l.multiplicator}× · ${esc(l.data)}</p>
     <div class="chips">${(l.consum_mp||[]).map(c => `<span class="chip">${esc(c.ingredient)} ${c.cantitate.toFixed(1)}${esc(c.um)}</span>`).join("")}</div></div>
     <button class="btn btn-sm" onclick="openProductie('${l.id}')">Modifică</button>
   </div></div>`;
@@ -789,9 +839,10 @@ window.openProductie = (lotId=null) => {
       <div><button class="add-line-btn" style="width:100%" onclick="addPrBorcane()">+ Adaugă volum</button></div>
     </div>
     <div id="pr-borcane-list"></div>
-    <div class="grid g2" style="margin-top:8px">
+    <div class="grid g3" style="margin-top:8px">
       <div><label class="fld">Nr. lot</label><input id="pr-lot" value="${esc(l?.numar || "LOT-"+Date.now().toString().slice(-6))}"></div>
       <div><label class="fld">Data producției</label><input id="pr-data" type="date" value="${l?.data||azi()}"></div>
+      <div><label class="fld">Etichete consumate</label><input id="pr-etichete" type="number" placeholder="= total borcane" value="${l?.nr_etichete ?? ""}"></div>
     </div>
     <button class="btn" style="margin:10px 0" onclick="calcConsum()">Calculează consum MP</button>
     <div id="pr-preview"></div>
@@ -841,29 +892,47 @@ window.execProductie = async () => {
   if(prPreview.consum.some(c => !c.ok)){ alert("Stoc insuficient pentru unele ingrediente!"); return; }
   if(prBorcane.length === 0){ alert("Adaugă cel puțin un volum de borcane."); return; }
   setStatus("Se salvează…");
-  // restaurăm consumul lotului vechi (la editare)
-  if(prEditLot){
-    for(const c of (prEditLot.consum_mp||[])){
-      const row = D.intrari_mp.find(x => x.ingredient === c.ingredient);
-      if(row) await dbUpd("intrari_mp", row.id, { cantitate: row.cantitate + c.cantitate });
-      else await dbAdd("intrari_mp", { ingredient:c.ingredient, um:c.um, cantitate:c.cantitate, pret:0, tva:11, furnizor:"", factura:"restaurare lot", data:azi() });
+  try {
+    // simulăm modificările local, apoi le scriem atomic într-un singur batch
+    const local = D.intrari_mp.map(r => ({ ...r }));
+    const noi = [];
+    // restaurăm consumul lotului vechi (la editare)
+    if(prEditLot){
+      for(const c of (prEditLot.consum_mp||[])){
+        const row = local.find(x => x.ingredient === c.ingredient);
+        if(row) row.cantitate += c.cantitate;
+        else noi.push({ ingredient:c.ingredient, categorie:catOf(c.ingredient), um:c.um, cantitate:c.cantitate, pret:0, tva:11, furnizor:"", factura:"restaurare lot", data:azi() });
+      }
     }
-  }
-  // scădem consumul nou, secvențial pe rânduri
-  for(const c of prPreview.consum){
-    let ramas = c.necesar;
-    for(const row of D.intrari_mp.filter(x => x.ingredient === c.ingredient)){
-      if(ramas <= 0) break;
-      const scad = Math.min(row.cantitate, ramas);
-      if(scad > 0){ await dbUpd("intrari_mp", row.id, { cantitate: row.cantitate - scad }); ramas -= scad; }
+    // scădem consumul nou, secvențial pe rânduri
+    for(const c of prPreview.consum){
+      let ramas = c.necesar;
+      for(const row of local.filter(x => x.ingredient === c.ingredient)){
+        if(ramas <= 0) break;
+        const scad = Math.min(row.cantitate, ramas);
+        if(scad > 0){ row.cantitate -= scad; ramas -= scad; }
+      }
+      for(const row of noi.filter(x => x.ingredient === c.ingredient)){
+        if(ramas <= 0) break;
+        const scad = Math.min(row.cantitate, ramas);
+        if(scad > 0){ row.cantitate -= scad; ramas -= scad; }
+      }
     }
-  }
-  const lotData = { numar:$("pr-lot").value.trim(), produs:prPreview.reteta.produs, reteta_id:prPreview.reteta.id,
-    multiplicator:prPreview.mult, borcane: prBorcane.map(b => ({ dim:b.dim, nr:b.nr })), data:$("pr-data").value,
-    consum_mp: prPreview.consum.map(c => ({ ingredient:c.ingredient, cantitate:c.necesar, um:c.um })) };
-  if(prEditLot) await dbUpd("loturi", prEditLot.id, lotData);
-  else await dbAdd("loturi", lotData);
-  setStatus("✓ Sincronizat cu baza de date","ok");
+    const batch = writeBatch(db);
+    local.forEach((r,i) => { if(r.cantitate !== D.intrari_mp[i].cantitate) batch.update(doc(db, CP+"intrari_mp", r.id), { cantitate: r.cantitate }); });
+    noi.forEach(n => batch.set(doc(collection(db, CP+"intrari_mp")), n));
+    const nrEt = parseInt($("pr-etichete").value);
+    const totalB = prBorcane.reduce((s,b)=>s+b.nr,0);
+    const lotData = { numar:$("pr-lot").value.trim(), produs:prPreview.reteta.produs, reteta_id:prPreview.reteta.id,
+      multiplicator:prPreview.mult, borcane: prBorcane.map(b => ({ dim:b.dim, nr:b.nr })),
+      nr_etichete: isNaN(nrEt) ? totalB : nrEt, data:$("pr-data").value,
+      consum_mp: prPreview.consum.map(c => ({ ingredient:c.ingredient, cantitate:c.necesar, um:c.um })) };
+    if(prEditLot) batch.update(doc(db, CP+"loturi", prEditLot.id), lotData);
+    else batch.set(doc(collection(db, CP+"loturi")), lotData);
+    await batch.commit();
+    await Promise.all([loadCol("intrari_mp"), loadCol("loturi")]);
+    setStatus("✓ Sincronizat cu baza de date","ok");
+  } catch(e){ setStatus("⚠ Eroare la salvare: " + e.message, "err"); }
   prEditLot = null; prPreview = null; prBorcane = [];
   closeModal(); render();
 };
@@ -939,7 +1008,25 @@ window.cpSet = (k,v) => {
 };
 
 // ── START ─────────────────────────────────────────────────────────
-loadAll().then(render);
+// ── START (cu autentificare) ──────────────────────────────────────
+window.loginGoogle = async () => {
+  try { await signInWithPopup(auth, provider); }
+  catch(e){ $("login-msg").textContent = "Eroare autentificare: " + e.message; }
+};
+window.logoutUser = () => signOut(auth);
+onAuthStateChanged(auth, u => {
+  if(u && (UTILIZATORI_PERMISI.length === 0 || UTILIZATORI_PERMISI.includes(u.email))){
+    $("login-ov").style.display = "none";
+    $("btn-logout").style.display = "";
+    loadAll().then(render);
+  } else if(u){
+    $("login-msg").textContent = "Contul " + u.email + " nu are acces la această aplicație.";
+    signOut(auth);
+  } else {
+    $("login-ov").style.display = "flex";
+    $("btn-logout").style.display = "none";
+  }
+});
 </script>
 </body>
 </html>
