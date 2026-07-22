@@ -117,6 +117,7 @@
 <div id="modal-root"></div>
 <div class="status"><span id="sync-status">Conectare la baza de date…</span><span>Chef SOSIN Atelier</span></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getFirestore, collection, getDocs, addDoc, deleteDoc, doc, updateDoc, writeBatch }
@@ -236,7 +237,7 @@ window.closeModal = () => { $("modal-root").innerHTML = ""; };
 const TABS = [
   ["parteneri","🏭 Parteneri"],["fact_in","📥 Facturi intrare"],["fact_out","📤 Facturi ieșire"],
   ["inventar","📦 Inventar"],["retete","📋 Rețete"],["productie","⚗️ Producție"],
-  ["loturi","🏷️ Loturi"],["stoc","🛒 Stoc produse"],["preturi","💰 Prețuri"]
+  ["loturi","🏷️ Loturi"],["stoc","🛒 Stoc produse"],["preturi","💰 Prețuri"],["rapoarte","📊 Rapoarte"]
 ];
 let activeTab = "parteneri";
 const SUB = { parteneri:"furnizori", inventar:"mp", loturi:null };
@@ -257,7 +258,7 @@ function render(){
   $("tabs").innerHTML = TABS.map(([id,l]) =>
     `<button class="tab${id===activeTab?" active":""}" onclick="setTab('${id}')">${l}</button>`).join("");
   const R = { parteneri:rParteneri, fact_in:rFactIn, fact_out:rFactOut, inventar:rInventar,
-    retete:rRetete, productie:rProductie, loturi:rLoturi, stoc:rStoc, preturi:rPreturi };
+    retete:rRetete, productie:rProductie, loturi:rLoturi, stoc:rStoc, preturi:rPreturi, rapoarte:rRapoarte };
   $("content").innerHTML = R[activeTab]();
 }
 
@@ -1008,6 +1009,120 @@ window.cpSet = (k,v) => {
 };
 
 // ── START ─────────────────────────────────────────────────────────
+// ── RAPOARTE / EXPORT ─────────────────────────────────────────────
+function luniDisponibile(){
+  const set = new Set();
+  [...D.loturi, ...D.vanzari, ...D.intrari_mp].forEach(x => { if(x.data) set.add(String(x.data).slice(0,7)); });
+  return [...set].sort().reverse();
+}
+let rapLuna = "";
+function rRapoarte(){
+  const luni = luniDisponibile();
+  if(!rapLuna && luni.length) rapLuna = luni[0];
+  return `
+  <div class="card"><h3>Export Excel</h3>
+    <p class="muted" style="margin-bottom:12px">Fiecare buton descarcă un fișier .xlsx cu datele curente.</p>
+    <div class="grid g2">
+      <button class="btn" onclick="expStocuri()">📦 Stocuri (MP + ambalaje + produse)</button>
+      <button class="btn" onclick="expInventar()">📥 Inventar (intrări MP + ambalaje)</button>
+      <button class="btn" onclick="expLoturi()">🏷️ Listă loturi</button>
+      <button class="btn" onclick="expFacturi()">🧾 Facturi intrare + ieșire</button>
+    </div>
+  </div>
+  <div class="card"><h3>Consum lunar</h3>
+    <div class="grid g2" style="align-items:end">
+      <div><label class="fld">Luna</label><select id="rap-luna" onchange="rapLuna=this.value;render()">
+        ${optHtml(luni.length?luni:[""], rapLuna)}</select></div>
+      <button class="btn btn-p" onclick="expLunar()">⬇ Export consum lunar</button>
+    </div>
+    ${rapLunarHtml()}
+  </div>`;
+}
+function calcLunar(luna){
+  const inL = x => x.data && String(x.data).startsWith(luna);
+  const consum = {};
+  D.loturi.filter(inL).forEach(l => (l.consum_mp||[]).forEach(c =>
+    consum[c.ingredient] = (consum[c.ingredient]||0) + c.cantitate));
+  const prod = {}; D.loturi.filter(inL).forEach(l => prod[l.produs] = (prod[l.produs]||0) + lotTotal(l));
+  const vand = {}, incas = {};
+  D.vanzari.filter(inL).forEach(v => { vand[v.produs] = (vand[v.produs]||0) + v.numar; incas[v.produs] = (incas[v.produs]||0) + v.numar*v.pret; });
+  const achiz = D.intrari_mp.filter(inL).reduce((s,r)=>s+r.cantitate*r.pret,0)
+    + D.intrari_ambalaje.filter(inL).reduce((s,r)=>s+r.numar*r.pret,0);
+  return { consum, prod, vand, incas, achiz };
+}
+function rapLunarHtml(){
+  if(!rapLuna) return `<p class="empty">Nu există date.</p>`;
+  const r = calcLunar(rapLuna);
+  const totalInc = Object.values(r.incas).reduce((s,v)=>s+v,0);
+  return `
+  <div class="grid g3" style="margin-top:12px">
+    <div class="stat-card"><div class="lbl">Achiziții (fără TVA)</div><div class="val">${r.achiz.toFixed(0)} lei</div></div>
+    <div class="stat-card"><div class="lbl">Încasări (fără TVA)</div><div class="val">${totalInc.toFixed(0)} lei</div></div>
+    <div class="stat-card"><div class="lbl">Borcane produse</div><div class="val">${Object.values(r.prod).reduce((s,v)=>s+v,0)}</div></div>
+  </div>
+  <div class="tbl-wrap" style="margin-top:12px"><table>
+    <tr><th>Ingredient consumat</th><th>Cantitate</th><th>Valoare est.</th></tr>
+    ${Object.entries(r.consum).sort((a,b)=>cmpRO(catOf(a[0]),catOf(b[0]))||cmpRO(a[0],b[0]))
+      .map(([ig,c]) => `<tr><td>${esc(ig)}</td><td>${c.toFixed(1)}</td><td>${(c*pretMediu(ig)).toFixed(2)} lei</td></tr>`).join("")}
+  </table></div>`;
+}
+function saveXlsx(sheets, nume){
+  const wb = XLSX.utils.book_new();
+  sheets.forEach(([titlu, rows]) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), titlu.slice(0,31)));
+  XLSX.writeFile(wb, `ChefSOSIN_${nume}_${azi()}.xlsx`);
+}
+window.expStocuri = () => {
+  const sMP = stocMP(), sA = stocAmbalaje(), sP = stocProduse();
+  const mp = Object.entries(sMP).sort((a,b)=>cmpRO(catOf(a[0]),catOf(b[0]))||cmpRO(a[0],b[0]))
+    .map(([ig,c]) => ({ Categorie:catOf(ig), Ingredient:ig, Cantitate:+c.toFixed(2), "Preț mediu":+pretMediu(ig).toFixed(3), "Valoare stoc":+(c*pretMediu(ig)).toFixed(2) }));
+  const amb = [];
+  ["borcane","capace","etichete"].forEach(t => Object.entries(sA[t]).sort((a,b)=>cmpRO(a[0],b[0]))
+    .forEach(([k,v]) => amb.push({ Tip:t, "Dimensiune/Produs":k, Bucăți:v })));
+  const pf = Object.entries(sP).sort((a,b)=>cmpRO(a[0],b[0]))
+    .map(([p,x]) => ({ Produs:p, Produse:x.produs, Vândute:x.vandut, "Stoc curent":x.produs-x.vandut }));
+  saveXlsx([["Stoc MP",mp],["Stoc ambalaje",amb],["Stoc produse",pf]], "Stocuri");
+};
+window.expInventar = () => {
+  const mp = [...D.intrari_mp].sort((a,b)=>cmpRO(a.categorie||"Altele",b.categorie||"Altele")||cmpRO(a.ingredient,b.ingredient))
+    .map(r => ({ Categorie:r.categorie||"Altele", Ingredient:r.ingredient, UM:r.um, Cantitate:r.cantitate,
+      "Preț/UM":r.pret, TVA:r.tva+"%", Furnizor:fNume(r.furnizor), Factură:r.factura||"", Data:r.data||"" }));
+  const amb = [...D.intrari_ambalaje].sort((a,b)=>cmpRO(a.tip,b.tip)||cmpRO(a.dim||a.produs,b.dim||b.produs))
+    .map(r => ({ Tip:r.tip, "Dimensiune/Produs":r.tip==="etichete"?r.produs:r.dim, Bucăți:r.numar,
+      "Preț/buc":r.pret, TVA:r.tva+"%", Furnizor:fNume(r.furnizor), Factură:r.factura||"", Data:r.data||"" }));
+  saveXlsx([["Intrări MP",mp],["Intrări ambalaje",amb]], "Inventar");
+};
+window.expLoturi = () => {
+  const rows = [...D.loturi].sort((a,b)=>String(b.data||"").localeCompare(String(a.data||"")))
+    .map(l => ({ Lot:l.numar, Produs:l.produs, Data:l.data||"", Multiplicator:l.multiplicator,
+      Volume:lotBorcane(l).map(b=>`${b.nr}×${b.dim}`).join(", "), "Total borcane":lotTotal(l),
+      Etichete:l.nr_etichete ?? "", Consum:(l.consum_mp||[]).map(c=>`${c.ingredient} ${c.cantitate.toFixed(1)}${c.um}`).join("; ") }));
+  saveXlsx([["Loturi",rows]], "Loturi");
+};
+window.expFacturi = () => {
+  const fin = [], fout = [];
+  D.facturi_intrare.forEach(f => (f.linii||[]).forEach(l => fin.push({ Factură:f.nr, Data:f.data, Furnizor:f.furnizor_nume||"",
+    Descriere:l.descriere, Cantitate:l.cantitate, UM:l.um, "Preț fără TVA":l.pret_fara, TVA:l.tva+"%",
+    "Preț cu TVA":+l.pret_cu.toFixed(2), "Total cu TVA":+(l.cantitate*l.pret_cu).toFixed(2) })));
+  D.facturi_iesire.forEach(f => (f.linii||[]).forEach(l => fout.push({ Factură:f.nr, Data:f.data, Client:f.client_nume||"",
+    Produs:l.produs, Bucăți:l.cantitate, "Preț fără TVA":l.pret_fara, TVA:l.tva+"%",
+    "Preț cu TVA":+l.pret_cu.toFixed(2), "Total cu TVA":+(l.cantitate*l.pret_cu).toFixed(2) })));
+  saveXlsx([["Facturi intrare",fin],["Facturi ieșire",fout]], "Facturi");
+};
+window.expLunar = () => {
+  if(!rapLuna) return;
+  const r = calcLunar(rapLuna);
+  const cons = Object.entries(r.consum).sort((a,b)=>cmpRO(catOf(a[0]),catOf(b[0]))||cmpRO(a[0],b[0]))
+    .map(([ig,c]) => ({ Categorie:catOf(ig), Ingredient:ig, "Cantitate consumată":+c.toFixed(2), "Valoare est.":+(c*pretMediu(ig)).toFixed(2) }));
+  const prod = Object.entries(r.prod).sort((a,b)=>cmpRO(a[0],b[0])).map(([p,n]) => ({ Produs:p, "Borcane produse":n }));
+  const vanz = Object.entries(r.vand).sort((a,b)=>cmpRO(a[0],b[0]))
+    .map(([p,n]) => ({ Produs:p, "Borcane vândute":n, "Încasări fără TVA":+(r.incas[p]||0).toFixed(2) }));
+  const sumar = [{ Luna:rapLuna, "Achiziții fără TVA":+r.achiz.toFixed(2),
+    "Încasări fără TVA":+Object.values(r.incas).reduce((s,v)=>s+v,0).toFixed(2),
+    "Borcane produse":Object.values(r.prod).reduce((s,v)=>s+v,0),
+    "Borcane vândute":Object.values(r.vand).reduce((s,v)=>s+v,0) }];
+  saveXlsx([["Sumar",sumar],["Consum MP",cons],["Producție",prod],["Vânzări",vanz]], "Lunar_"+rapLuna);
+};
+
 // ── START (cu autentificare) ──────────────────────────────────────
 window.loginGoogle = async () => {
   $("login-msg").textContent = "Se conectează…";
