@@ -138,6 +138,10 @@ const D = {}; COLS.forEach(c => D[c] = []);
 const TVA = [0,11,21];
 const UM = ["g","kg","ml","L","buc","pungă","cutie"];
 const DIM = ["156ml","200ml","300ml","1000ml","1700ml"];
+const CATEGORII = ["Legume","Fructe","Chili","Condimente & mirodenii","Cereale & leguminoase","Îndulcitori","Sare","Lichide & oțeturi","Culturi & enzime","Altele"];
+const cmpRO = (a,b) => String(a??"").localeCompare(String(b??""), "ro");
+const catOf = ing => { for(let i=D.intrari_mp.length-1;i>=0;i--){ const r=D.intrari_mp[i]; if(r.ingredient===ing && r.categorie) return r.categorie; } return "Altele"; };
+const catOpts = sel => optHtml(CATEGORII, sel);
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
